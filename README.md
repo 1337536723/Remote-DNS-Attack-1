@@ -143,7 +143,7 @@ Time约束：伪造包要比真正DNS服务器返回包快。
 
 ![dig example](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image42.png)
 
-最开始是向192.35.51.30 (f.gtld-servers.net)发出查询www.example.com，gtld是什么呢？它是通用顶级域（英语：Generic top-level domain）的意思。f.gtld-servers.net则是负责.com 和 .net 域名的一个顶级域名服务器。从返回的应答包来看，这一步得到的信息是可以从a.iana-servers.net和b.iana-servers.net这两个域名服务器找到www.example.com 的线索。这一步其实已经返回了a.iana-servers.net和b.iana-servers.net这两个域名服务器的地址，但是Apollo显然没有采用。
+最开始是向192.35.51.30 (f.gtld-servers.net)发出查询www.example.com，gtld是什么呢？它是通用顶级域（英语：Generic top-level domain. 的意思。f.gtld-servers.net则是负责.com 和 .net 域名的一个顶级域名服务器。从返回的应答包来看，这一步得到的信息是可以从a.iana-servers.net和b.iana-servers.net这两个域名服务器找到www.example.com 的线索。这一步其实已经返回了a.iana-servers.net和b.iana-servers.net这两个域名服务器的地址，但是Apollo显然没有采用。
 
 ### 为什么Apollo不直接接受.com的DNS返回的example.com的DNS a.iana-servers.net 的地址呢？
 
@@ -182,3 +182,62 @@ Transaction ID是16bit的，这个前面已经提到了。然后标志flags有�
 ![DNS packet](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image48.png)
 
 这就是我们需要伪造的包，Queries部分采用一个不存在的域名，Answer部分采用伪造的恶意IP地址，权威域名服务器填上ns.dnslabattacker.net。
+
+## 结果验证
+
+如果攻击成功，那么Apollo的DNS缓存就会像下图一样，可以看到example.com 的NS记录变成了我们伪造的ns.dnslabattacker.net。为了检验是否真的成功，我们可以在用户机上使用对www.example.com 使用dig命令，查看返回的IP地址。
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image49.png)
+
+但是，当Apollo收到缓存中不存在的DNS记录的查询时，它就会向我们设置的伪造域名服务器ns.dnslabattacker.net提交查询，因为这个域名服务器是不存在的，Apollo会发现这一点，然后把这条DNS记录设置为无效记录，这样毒化就失效了。这时可能会想，**能不能在伪造应答包时给ns.dnslabattacker.net设置一个IP地址，从而使得伪造的域名服务器变为真实“存在”的呢？**
+
+答案是否定的，原因和前面分析**为什么Apollo不直接接受.com的DNS返回的example.com的DNS a.iana-servers.net 的地址**是一样的。因为我们伪造应答包是从a.iana-servers.net或者b.iana-servers.net这两个域名服务器返回的，它们不是负责管辖example.com这个域的权威域名服务器，所以即使我们设置了IP地址，Apollo也不会采纳。
+
+有两个方案解决这个问题：
+
+**方案一、使用真正的域名**
+
+> 如果我们有真正的域名就不需要用ns.dnslabattacker.net这个假的了，直接替换掉伪造应答包中的ns.dnslabattacker.net就可以了。当然前提是我们的域名解析到了主机上面，能够提供应答，像本地攻击实验那样配置就可以了。
+
+**方案二、使用伪造的域名**
+
+> 因为我们没有真正的域名，所以实验中采用这个方案。直接在Apollo的DNS配置中增加一个ns.dnslabattacker.net对应的IP地址，把它指向攻击者的主机。这样Apollo就不需要去问上级DNS服务器ns.dnslabattacker.net的IP地址是什么，自然也就不会穿帮了。
+
+### 方案2的具体配置
+
+1. 配置Apollo的/etc/bind/named.conf.default-zones文件，加入以下条目：<br>
+![config](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image50.png)
+
+2. 创建file对应的文件db.attacker，然后把对应的内容写进去。这个文件已经好了，直接复制到Apollo的虚拟机中对应位置(/etc/bind/)即可。<br>![config](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image51.png)
+
+3. 在攻击者的主机上配置DNS服务器，这样才能对Apollo的查询提供应答。配置方式和本地攻击时进行的配置是类似的。首先在/etc/bind/named.conf.local文件中添加以下条目：<br>![config](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image52.png)
+
+4. 然后创建file对应的文件，同样是已经提供好的，复制到攻击者的主机就可以了：<br>![config](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image53.png)
+
+5. 配置完成后需要重启Apollo和攻击者主机，使得配置生效。如果配置成功，那么在用户主机上dig www.example.com，返回的就是上面db文件中设置得1.1.1.1。
+
+### 攻击效果
+
+攻击前Apollo的DNS缓存：
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image54.png)
+
+可以看到example.com对应的域名服务器是原来的a.iana-servers.net和b.iana-servers.net。当Apollo收到该域的其他域名时就会向这两个域名服务器发出DNS查询。
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image55.png)
+
+攻击时，我只借用攻击机的IP(可以是伪造IP)向Apollo发起DNS查询，因为查询的域名abdde.example.com(随机生成)在Apollo的DNS缓存中没有，所以Apollo就向域名服务器b.iana-servers.net(199.43.133.53)发起了DNS查询。2~7的包是伪造的应答，因为在程序中我设置的是在攻击者发出DNS查询的0.9s后开始发送大量的伪造应答包(100个，目的是猜出Apollo向域名服务器发出DNS查询时用的Transaction ID)，这个时间比Apollo实际向域名服务器发出DNS查询的时间短，所以会看到其中一部分伪造应答包已经发出了。
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image56.png)
+
+查看伪造应答包的内容，其中查询部分与之前发出的DNS查询是完全一致的，然后加入Answer部分，把查询域名对应的IP地址设置为恶意IP，然后权威命名服务器设置为ns.dnslabattacker.net。
+
+#### 用户机上dig example.com
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image57.png)
+
+#### Apollo的DNS缓存
+
+![result](https://raw.githubusercontent.com/familyld/Remote-DNS-Attack/master/graph/image58.png)
+
+可以看到Apollo已经成功被毒化了，再次dig该域的其他域名，Apollo就会变成向ns.dnslabattacker.net这个假的权威域名服务器发出DNS查询了。
